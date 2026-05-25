@@ -101,8 +101,134 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun seqMatch (vs, ps) {
+  vs.length == ps.size && 
+  foldl (fun ([ok, i], p) { [ok && isMatch (vs[i], p), i + 1] }, [true, 0], ps) [0]
+}
+
+fun isMatch (v, p) {
+  case p of
+    Any           -> true
+  | Named (_, p) -> isMatch (v, p)
+  | Const (n)     -> v == n
+  | String (s)    -> compare(v, s) == 0
+  | Sexp (ptag, ps) ->
+      case v of
+        Sexp (vtag, vs) -> compare (ptag, vtag) == 0 && seqMatch (vs, ps)
+      | _               -> false
+      esac
+  | Array (ps) ->
+      case v of
+        vs -> seqMatch (vs, ps)
+      | _         -> false
+      esac
+  esac
+}
+
+fun getMatch(v, bs, c){
+  case bs of 
+    [p, e] : bs -> if isMatch(v, p) then eval(c, e) else getMatch(v, bs, c) fi
+    | _ -> [c, Bot]
+  esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+      Assn (x, expr)        ->
+        case eval(c, x) of [c, ref] ->
+          case eval(c, expr) of [[s, w], vl] ->
+            case ref of
+                Ref (name)     -> [[s <- [name, Var(vl)], w], vl]
+              | ElemRef (l, i) ->
+                case l of
+                    Sexp (tag, arr) -> arr[i] := vl
+                  | _               -> l[i] := vl
+                esac; [c, vl]
+            esac
+          esac
+        esac
+    | Set (Ref(x), expr) ->
+        case eval(c, expr) of [[s, w], vl] ->
+          case lookup(s, x) of
+              Var(_) -> [[s <- [x, Var(vl)], w], vl]
+            | Val(_) -> [[s <- [x, Val(vl)], w], vl]
+          esac
+        esac
+    | Seq (a, b)            -> eval(eval(c, a).fst, b)
+    | Skip                  -> [c, Bot]
+    | If (e, t, f)          -> case eval(c, e) of [c, cnd] ->
+      if cnd then eval(c, t) else eval(c, f) fi
+    esac
+    | While (e, b)          -> case eval(c, e) of [c, cnd] ->
+      if cnd then eval(c, DoWhile(b, e)) else [c, Bot] fi
+    esac
+    | DoWhile (b, e)        -> eval(eval(c, b).fst, While(e, b))
+    | Var (x)               -> case lookup(s, x) of Var(v) -> [c, v] | Val(v) -> [c, v] esac
+    | Val (x)               -> case lookupVal(s, x) of Val(v) -> [c, v] esac
+    | Ref (x)               -> lookupVar(s, x); [c, Ref(x)]
+    | Const (n)             -> [c, n]
+    | Binop (op, e1, e2)    -> case eval(c, e1) of [c, a] ->
+      case eval(c, e2) of [c, b] ->
+        [c, evalOp(op, a, b)]
+      esac
+    esac
+    | Case(v, bs) ->
+      case eval (c, v) of [c, v] -> 
+        getMatch(v, bs, c)
+      esac
+    | Scope (ds, body)      ->
+        case foldl(fun (s, d) {
+          case d of
+              Var(xs)            -> addVars(s, xs)
+            | Val(xs)            -> addVals(s, xs)
+            | Fun(f, args, body) -> addFunction(s, f, args, body)
+          esac
+        }, enterScope(s), ds) of s ->
+          case eval([s, w], body) of [[s, w], v] ->
+            [[leaveScope(s), w], v]
+          esac
+        esac
+    | Call (name, argexps)  ->
+        case s.lookupFun(name) of Fun(argnames, body) ->
+          case evalList(c, argexps) of [[s, w], args] ->
+            case body of
+                External -> case evalBuiltin(name, args, w) of [vl, w] ->
+                  [[s, w], vl]
+                esac
+              | _        ->
+                  case foldl(fun (s, [x, v]) {
+                    addName(s, x, Val(v))
+                  }, enterFunction(s), zip(argnames, args)) of fun_s ->
+                    case eval([fun_s, w], body) of [[ns, nw], v] ->
+                      [[leaveFunction(s, getGlobal(ns)), nw], v]
+                    esac
+                  esac
+            esac
+          esac
+        esac
+    | Ignore(x)             -> [eval(c, x).fst, Bot]
+    | String (s)            -> [c, s]
+    | Array (exprs)         -> case evalList(c, exprs) of [c, arr] ->
+      [c, listArray(arr)]
+    esac
+    | Elem    (lexp, iexp)  -> case eval(c, lexp) of [c, l] ->
+      case eval(c, iexp) of [c, i] ->
+        [c, case l of
+            Sexp (tag, elems) -> elems[i]
+          | _                 -> l[i]
+        esac]
+      esac
+    esac
+    | ElemRef (lexp, iexp)  -> case eval(c, lexp) of [c, l] ->
+      case eval(c, iexp) of [c, i] ->
+        [c, ElemRef(l, i)]
+      esac
+    esac
+    | Sexp    (tag, exprs)  -> case evalList(c, exprs) of [c, arr] ->
+      [c, Sexp(tag, listArray(arr))]
+    esac
+    | _                     -> failure("Stmt eval not implemented\n")
+  esac
 }
 
 

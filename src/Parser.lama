@@ -226,8 +226,37 @@ var
                         esac, loc)}
     } |
   
-    $(failure ("the rest of primary parsing in not implemented\n"))),
+    -s["("] e=scopeExpr -s[")"] { e }                                                                                  |
+    -s["if"] c=exp -s["then"] t=scopeExpr f=condTrail -s["fi"] { fun (a) { If(c(Val), t(a), f(a)) } }                  |
+    loc=pos -s["skip"] { fun (a) { assertVoid(a, Skip, loc) } }                                                        |
+    loc=pos -s["while"] c=exp -s["do"] b=scopeExpr -s["od"] { fun (a) { assertVoid(a, While(c(Val), b(Void)), loc) } } |
+    loc=pos -s["do"] b=scopeExpr -s["while"] c=exp -s["od"] { fun (a) { assertVoid(a, distributeScope(b(Void), fun (body)
+      { DoWhile(body, c(Val)) }), loc) } }                                                                             |
+    loc=pos -s["for"] i=scopeExpr -s[","] c=exp -s[","] e=exp -s["do"] b=scopeExpr -s["od"] { fun (a) {
+      assertVoid(a, distributeScope(i(Void), fun (ini) { Seq(ini, While(c(Val), Seq(b(Void), e(Void)))) }), loc)
+    } }|
+    loc=pos -s["case"] c=exp -s["of"] brs=listBy[syntax (p=pattern -s["->"] e=scopeExpr {[p, e]}), s("|")] -s["esac"] {
+      fun (a) { assertValue (a, c (Val) =>> fun (vl) { fun (env) { freshName (env) } =>> fun (name) {
+          chainST (map (fun ([p, e]) { e (a) => fun (ev) { [p, ev] } }, brs)) => fun (branches) {
+            expandScope ({Var ({[name, Some (vl)]})}, Case (Var (name), reifyPatternBindings (name, branches)))
+          } } }, loc) }
+    }),
+
+    condTrail = memo $ eta syntax (-s["else"] f=exp { f }                                      |
+    -s["elif"] c=exp -s["then"] t=scopeExpr f=condTrail { fun (a) { If(c(Val), t(a), f(a)) } } |
+    loc=pos -s[""] { fun (a){ assertVoid(a, Skip, loc) } }),
    
+  pattern = memo $ eta syntax (
+    -s["("] p=pattern -s[")"] { p }  |
+    x=strlit { String (x) } | 
+    x=chrlit { Const (x) } | 
+    x=decimal { Const (stringInt (x)) } |
+    -s["_"] { Any } |
+    x=lident { Named (x, Any) } |
+    x=lident -s["@"] p=pattern { Named (x, p) } |
+    tag=uident args=inbr[s("("), list0(pattern), s(")")]? { Sexp (tag, case args of None -> {} | Some (ps) -> ps esac) } |
+    x=inbr[s("["), list0(pattern), s("]")] { Array (x) }
+  ),
 
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
